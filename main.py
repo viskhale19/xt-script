@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import ccxt
 import dotenv
@@ -14,9 +15,8 @@ EXCHANGE_NAME = os.getenv("EXCHANGE", "xt").lower()
 SYMBOL = os.getenv("SYMBOL", "BTC/USDT:USDT")
 LEVERAGE = float(os.getenv("LEVERAGE", 5))
 MARGIN_PERCENT = float(os.getenv("MARGIN_PERCENT", 50))
-MIN_POSITION_SIZE = float(os.getenv("MIN_POSITION_SIZE", 12))
 TIMEFRAME_SECONDS = int(os.getenv("TIMEFRAME_SECONDS", 300))  # default 5m
-TEST_MODE = os.getenv("TEST_MODE", "true").lower() == "true"
+CONTRACT_NUM = int(os.getenv("CONTRACT_NUM",0))
 
 CONTRACT_SIZE = 0.0001
 # ========== Exchange Setup ==========
@@ -98,16 +98,14 @@ def check_position_profit():
         if float(pos['contracts']) > 0:
             entry_price = float(pos['entryPrice'])
             mark_price = float(pos.get('markPrice') or exchange.fetch_ticker(SYMBOL)['last'])
-            side = pos['side'].lower()  # 'long' or 'short'
-            # pnl = float(pos.get('unrealizedPnl', 0))
+            side = pos['side']
             profit = mark_price > entry_price if side == 'long' else mark_price < entry_price
 
-            print(f"--- Position Info ---")
-            print(f"Side       : {side.upper()}")
-            print(f"Entry Price: {entry_price}")
-            print(f"Mark Price : {mark_price}")
-            # print(f"Unrealized PnL: {pnl}")
-            print(f"In Profit? : {'Yes' if profit else 'No'}")
+            log(f"--- Position Info ---")
+            log(f"Side       : {side.upper()}")
+            log(f"Entry Price: {entry_price}")
+            log(f"Mark Price : {mark_price}")
+            log(f"In Profit? : {'Yes' if profit else 'No'}")
             return
 
     print("No open position.")
@@ -123,33 +121,29 @@ def close_position(pos):
     side = 'sell' if pos['side'] == 'long' else 'buy'
     amount = float(pos['contracts'])
     position_side = 'LONG' if side == 'sell' else 'SHORT'
-    if TEST_MODE:
-        log(f"[TEST] Would close position: {side} {amount} {SYMBOL} [{position_side}]")
-    else:
-        exchange.create_market_order(SYMBOL, side, amount, None, {
-            'reduceOnly': True,
-            'positionSide': position_side
-        })
-        log(f"Closed position: {side} {amount} {SYMBOL} [{position_side}]")
-        check_position_profit()
+    check_position_profit()
+    exchange.create_market_order(SYMBOL, side, amount, None, {
+        'reduceOnly': True,
+        'positionSide': position_side
+    })
+    log(f"Closed position: {side} {amount} {SYMBOL} [{position_side}]")
 
 def open_position(trend):
-    usdt_balance = get_balance()
-    margin = usdt_balance * (MARGIN_PERCENT / 100)
-    position_size = margin * LEVERAGE
-    if position_size < MIN_POSITION_SIZE:
-        log(f'Position size {position_size} below minimum, skipping')
-        return
     side = 'buy' if trend == 'up' else 'sell'
     position_side = 'LONG' if side == 'buy' else 'SHORT'
     last_price = exchange.fetch_ticker(SYMBOL)['last']
-    flex_amount = int(position_size / (last_price * CONTRACT_SIZE))
-    amount = 5 ## fixed amount for all positions -> usdt = volumn
-
-    if TEST_MODE:
-        log(f"[TEST] Would open position: {side} {amount} {SYMBOL} [{position_side}]")
-        log(f'[TEST] With data:\nusdt_balance: {usdt_balance}, margin: {margin}, position size: {position_size}')
+    if CONTRACT_NUM > 0: # fixed
+        amount = CONTRACT_NUM
+        exchange.create_market_order(SYMBOL, side, amount, None, {
+            'positionSide': position_side
+        })
+        log(f"Opened position: {side} {amount} {SYMBOL} [{position_side}]")
+        log(f'Volume: {amount*CONTRACT_SIZE*last_price}')
     else:
+        usdt_balance = get_balance()
+        margin = usdt_balance * (MARGIN_PERCENT / 100)
+        position_size = margin * LEVERAGE
+        amount = int(position_size / (last_price * CONTRACT_SIZE))
         exchange.create_market_order(SYMBOL, side, amount, None, {
             'positionSide': position_side
         })
@@ -165,9 +159,8 @@ def run():
         try:
             candles = get_candles(SYMBOL, 300, limit=6)
             if candles[-1][0] == last_candle_time:
-                time.sleep(10)
+                time.sleep(5)
                 continue
-
             last_candle_time = candles[-1][0]
             ha = to_heikin_ashi(candles)
             log("Latest regular and HA candles:")
@@ -183,7 +176,9 @@ def run():
                 if open_pos:
                     close_position(open_pos)
                 open_position(new_trend)
-        except Exception as e:
-            log(f"Error: {e}")
+        except KeyboardInterrupt:
+            log(f"Graceful exit ....")
+            sys.exit(0)
+
 if __name__ == '__main__':
     run()

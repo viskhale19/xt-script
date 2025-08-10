@@ -92,7 +92,7 @@ try:
     position_side = 'LONG' if side == 'buy' else 'SHORT'
     last_price = exchange.fetch_ticker(SYMBOL)['last']
     log(f'last price: {last_price}')
-    
+
     amount = int(position_size / (last_price * main.CONTRACT_SIZE))
     log(f'contract amount: {amount}')
 
