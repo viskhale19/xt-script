@@ -42,7 +42,11 @@ else:
     print(f"[WARN] {SYMBOL} is not a contract market; leverage not set.")
 # ========== Utilities ==========
 def log(msg):
-    print(f"[{datetime.now().isoformat()}] {msg}")
+    log_filename = f"logging-{datetime.now().strftime('%Y%m%d')}.log"
+    string = f"[{datetime.now().isoformat()}] {msg}\n"
+    print(string.strip())
+    with open(log_filename, 'a') as f:
+        f.write(string)
 
 def int_to_timeframe(seconds: int) -> str:
     if seconds < 60:
