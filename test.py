@@ -7,7 +7,7 @@ import traceback
 
 import ccxt
 import dotenv
-import main
+import trading_bot
 
 dotenv.load_dotenv()
 
@@ -93,7 +93,7 @@ try:
     last_price = exchange.fetch_ticker(SYMBOL)['last']
     log(f'last price: {last_price}')
 
-    amount = int(position_size / (last_price * main.CONTRACT_SIZE))
+    amount = int(position_size / (last_price * trading_bot.CONTRACT_SIZE))
     log(f'contract amount: {amount}')
 
 except Exception as e:

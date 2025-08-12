@@ -159,7 +159,8 @@ class TradingBotGUI(QWidget):
             ),
             "TIMEFRAME_SECONDS": int(self.timeframe_seconds.text()),
             "CONTRACT_NUM": (
-                int(self.contract_num.text()) if self.fixed_amount.isChecked() else None
+                int(self.contract_num.text()
+                    ) if self.fixed_amount.isChecked() else None
             ),
         }
 
