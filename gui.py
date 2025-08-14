@@ -1,67 +1,59 @@
+# gui.py
 import sys
-import os
 from PySide6.QtWidgets import (
-    QApplication,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QTextEdit,
-    QPushButton,
-    QCheckBox,
-    QFormLayout,
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QTextEdit, QPushButton, QCheckBox, QFormLayout, QMessageBox
 )
-from PySide6.QtCore import Qt, QThread, Signal
-import time
+from PySide6.QtCore import Qt, QObject, Signal, Slot
+from typing import Dict
+from trading_bot import TradingBot
 
-
-# --- Worker Thread to run the bot ---
-class BotWorker(QThread):
+# Bridge object to expose a Qt signal for logs and manage the TradingBot
+class BotRunner(QObject):
     log_signal = Signal(str)
 
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.running = True
-
-    def run(self):
-        # Simulate bot work, replace with your trading bot main loop
-        self.log_signal.emit("Bot started with config:\n" + str(self.config))
-        counter = 0
-        while self.running:
-            self.log_signal.emit(f"Processing... {counter}")
-            counter += 1
-            time.sleep(1)
-        self.log_signal.emit("Bot stopped.")
-
-    def stop(self):
-        self.running = False
-
-
-# --- Main GUI ---
-class TradingBotGUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Trading Bot")
-        self.setGeometry(200, 200, 900, 600)
+        self.bot: TradingBot | None = None
+
+    def start_bot(self, config: Dict):
+        # create bot with a callback that emits the Qt signal
+        def log_cb(msg: str):
+            # emit must be from Python thread-safe emitter
+            self.log_signal.emit(msg)
+
+        self.bot = TradingBot(config=config, log_cb=log_cb)
+        self.bot.start()
+
+    def stop_bot(self):
+        if self.bot:
+            self.bot.stop()
+            self.bot = None
+
+    def is_running(self) -> bool:
+        return self.bot is not None and self.bot.is_running()
+
+
+class TradingBotWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Trading Bot GUI")
+        self.setGeometry(200, 200, 1000, 600)
 
         main_layout = QHBoxLayout(self)
 
-        # Left: Log Output
+        # Left - log output
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         main_layout.addWidget(self.log_output, 2)
 
-        # Right: Config Panel
+        # Right - config panel
         config_layout = QVBoxLayout()
-
         form_layout = QFormLayout()
 
         self.api_key = QLineEdit()
         self.api_secret = QLineEdit()
         self.api_secret.setEchoMode(QLineEdit.EchoMode.Password)
-
         self.exchange_name = QLineEdit()
         self.symbol = QLineEdit()
         self.leverage = QLineEdit()
@@ -84,53 +76,50 @@ class TradingBotGUI(QWidget):
 
         config_layout.addLayout(form_layout)
 
-        # Start / Stop Buttons
-        btn_layout = QHBoxLayout()
+        # Start/Stop buttons
         self.start_btn = QPushButton("Start")
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
 
-        self.start_btn.clicked.connect(self.start_bot)
-        self.stop_btn.clicked.connect(self.stop_bot)
+        self.start_btn.clicked.connect(self.on_start)
+        self.stop_btn.clicked.connect(self.on_stop)
 
-        btn_layout.addWidget(self.start_btn)
-        btn_layout.addWidget(self.stop_btn)
-
-        config_layout.addLayout(btn_layout)
-
+        config_layout.addWidget(self.start_btn)
+        config_layout.addWidget(self.stop_btn)
         main_layout.addLayout(config_layout, 1)
 
-        # --- Require all fields ---
-        def validate_fields():
-            all_filled = all(
-                [
-                    self.api_key.text().strip(),
-                    self.api_secret.text().strip(),
-                    self.exchange_name.text().strip(),
-                    self.symbol.text().strip(),
-                    self.leverage.text().strip(),
-                    self.margin_percent.text().strip(),
-                    self.timeframe_seconds.text().strip(),
-                    self.contract_num.text().strip(),
-                ]
-            )
-            self.start_btn.setEnabled(all_filled)
+        # Bot runner bridge
+        self.runner = BotRunner()
+        self.runner.log_signal.connect(self.append_log)
 
-        # Connect text change signals
-        for field in [
-            self.api_key,
-            self.api_secret,
-            self.exchange_name,
-            self.symbol,
-            self.leverage,
-            self.margin_percent,
-            self.timeframe_seconds,
-            self.contract_num,
-        ]:
-            field.textChanged.connect(validate_fields)
+        # require validation of inputs before start
+        # simple approach: connect textChanged to a validator
+        for w in (
+            self.api_key, self.api_secret, self.exchange_name, self.symbol,
+            self.leverage, self.margin_percent, self.timeframe_seconds, self.contract_num
+        ):
+            w.textChanged.connect(self.validate_inputs)
+        self.validate_inputs()
 
-        self.bot_thread = None
+    @Slot()
+    def validate_inputs(self):
+        # if fixed amount is checked, CONTRACT_NUM must be filled; else leverage & margin must be filled
+        if self.fixed_amount.isChecked():
+            all_filled = all([
+                self.api_key.text().strip(), self.api_secret.text().strip(),
+                self.exchange_name.text().strip(), self.symbol.text().strip(),
+                self.timeframe_seconds.text().strip(), self.contract_num.text().strip()
+            ])
+        else:
+            all_filled = all([
+                self.api_key.text().strip(), self.api_secret.text().strip(),
+                self.exchange_name.text().strip(), self.symbol.text().strip(),
+                self.timeframe_seconds.text().strip(), self.leverage.text().strip(),
+                self.margin_percent.text().strip()
+            ])
+        self.start_btn.setEnabled(all_filled and not self.runner.is_running())
 
+    @Slot()
     def toggle_fixed_amount(self):
         if self.fixed_amount.isChecked():
             self.leverage.setEnabled(False)
@@ -140,77 +129,58 @@ class TradingBotGUI(QWidget):
             self.leverage.setEnabled(True)
             self.margin_percent.setEnabled(True)
             self.contract_num.setEnabled(False)
+        self.validate_inputs()
 
-    def start_bot(self):
-        config = {
-            "API_KEY": self.api_key.text(),
-            "API_SECRET": self.api_secret.text(),
-            "EXCHANGE_NAME": self.exchange_name.text(),
-            "SYMBOL": self.symbol.text(),
-            "LEVERAGE": (
-                float(self.leverage.text())
-                if not self.fixed_amount.isChecked()
-                else None
-            ),
-            "MARGIN_PERCENT": (
-                float(self.margin_percent.text())
-                if not self.fixed_amount.isChecked()
-                else None
-            ),
-            "TIMEFRAME_SECONDS": int(self.timeframe_seconds.text()),
-            "CONTRACT_NUM": (
-                int(self.contract_num.text()
-                    ) if self.fixed_amount.isChecked() else None
-            ),
-        }
+    @Slot()
+    def on_start(self):
+        # collect config
+        try:
+            config = {
+                "API_KEY": self.api_key.text().strip(),
+                "API_SECRET": self.api_secret.text().strip(),
+                "EXCHANGE_NAME": self.exchange_name.text().strip(),
+                "SYMBOL": self.symbol.text().strip(),
+                "TIMEFRAME_SECONDS": int(self.timeframe_seconds.text().strip()),
+                "FIXED_AMOUNT": bool(self.fixed_amount.isChecked()),
+            }
+            if self.fixed_amount.isChecked():
+                config["CONTRACT_NUM"] = int(self.contract_num.text().strip())
+            else:
+                config["LEVERAGE"] = float(self.leverage.text().strip())
+                config["MARGIN_PERCENT"] = float(self.margin_percent.text().strip())
+        except Exception as e:
+            QMessageBox.critical(self, "Invalid Input", f"Invalid configuration: {e}")
+            return
 
-        # Freeze config while running
-        for widget in [
-            self.api_key,
-            self.api_secret,
-            self.exchange_name,
-            self.symbol,
-            self.leverage,
-            self.margin_percent,
-            self.timeframe_seconds,
-            self.contract_num,
-            self.fixed_amount,
-        ]:
-            widget.setEnabled(False)
+        # disable form while running
+        for w in (
+            self.api_key, self.api_secret, self.exchange_name, self.symbol,
+            self.leverage, self.margin_percent, self.timeframe_seconds, self.contract_num,
+            self.fixed_amount
+        ):
+            w.setEnabled(False)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
 
-        self.bot_thread = BotWorker(config)
-        self.bot_thread.log_signal.connect(self.update_log)
-        self.bot_thread.start()
+        self.append_log("Starting bot...")
+        self.runner.start_bot(config)
 
-    def stop_bot(self):
-        if self.bot_thread:
-            self.bot_thread.stop()
-            self.bot_thread.wait()
-
-        # Unfreeze config
-        for widget in [
-            self.api_key,
-            self.api_secret,
-            self.exchange_name,
-            self.symbol,
-            self.leverage,
-            self.margin_percent,
-            self.timeframe_seconds,
-            self.contract_num,
-            self.fixed_amount,
-        ]:
-            widget.setEnabled(True)
-        self.start_btn.setEnabled(True)
+    @Slot()
+    def on_stop(self):
+        self.append_log("Stopping bot...")
+        self.runner.stop_bot()
+        # re-enable form
+        for w in (
+            self.api_key, self.api_secret, self.exchange_name, self.symbol,
+            self.leverage, self.margin_percent, self.timeframe_seconds, self.contract_num,
+            self.fixed_amount
+        ):
+            w.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.start_btn.setEnabled(True)
 
-    def update_log(self, message):
+    @Slot(str)
+    def append_log(self, message: str):
         self.log_output.append(message)
-
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    gui = TradingBotGUI()
-    gui.show()
-    sys.exit(app.exec())
+        # auto-scroll
+        self.log_output.verticalScrollBar().setValue(self.log_output.verticalScrollBar().maximum())
